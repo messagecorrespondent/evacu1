@@ -5,149 +5,148 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <meta name="theme-color" content="#0f1923"/>
+  <meta name="theme-color" content="#1e3a5f"/>
   <title>Evacu</title>
   <link rel="manifest" href="manifest.json"/>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
 
-<!-- REGISTRATION SCREEN -->
-<div id="screen-register" class="screen active">
-  <div class="register-bg">
-    <div class="register-card">
-      <div class="logo-area">
-        <div class="logo-icon">&#9888;</div>
-        <div class="logo-text">EVACU</div>
-        <div class="logo-sub">Emergency Alert System</div>
+<!-- SCREEN: PAIRING (waiting for PC to approve) -->
+<div id="screen-pairing" class="screen active">
+  <div class="pairing-bg">
+    <div class="pairing-top">
+      <div class="app-logo">&#9888; EVACU</div>
+      <div class="app-tagline">Emergency Alert System</div>
+    </div>
+    <div class="pairing-card">
+      <div class="pairing-state" id="pairing-state">
+        <!-- State: waiting -->
+        <div id="state-waiting" class="state-block active">
+          <div class="pairing-icon">&#128241;</div>
+          <div class="pairing-title">Your Pairing Code</div>
+          <div class="pairing-subtitle">Show this code to your admin in Evacu Admin on PC</div>
+          <div class="code-display" id="code-display">------</div>
+          <div class="code-hint">Admin goes to Devices &#8594; Add Device &#8594; enters this code</div>
+          <div class="pulse-ring"></div>
+          <div class="checking-lbl" id="checking-lbl">Waiting for admin...</div>
+        </div>
+        <!-- State: approved -->
+        <div id="state-approved" class="state-block">
+          <div class="pairing-icon success-icon">&#10003;</div>
+          <div class="pairing-title success-title">Connected!</div>
+          <div class="pairing-subtitle">Your device has been registered.<br>Opening app...</div>
+        </div>
       </div>
-      <div class="device-id-box">
-        <div class="device-id-label">YOUR DEVICE ID</div>
-        <div class="device-id-value" id="display-device-id">Loading...</div>
-        <button class="copy-btn" onclick="copyDeviceId()">Copy ID</button>
-      </div>
-      <div class="steps-box">
-        <div class="steps-title">HOW TO CONNECT</div>
-        <div class="step"><span class="step-num">1</span> Show this Device ID to your admin</div>
-        <div class="step"><span class="step-num">2</span> Admin adds you in Evacu Admin on PC</div>
-        <div class="step"><span class="step-num">3</span> Tap Connect below once added</div>
-      </div>
-      <button class="connect-btn" id="connect-btn" onclick="checkRegistration()">
-        <span id="connect-btn-text">I've been added - Connect</span>
-      </button>
-      <div class="connect-error" id="connect-error"></div>
     </div>
   </div>
 </div>
 
-<!-- MAIN APP -->
+<!-- SCREEN: MAIN APP -->
 <div id="screen-main" class="screen">
+
   <!-- Alert overlay -->
   <div id="alert-overlay" class="alert-overlay hidden">
-    <div class="alert-overlay-content">
-      <div class="alert-drill-badge hidden" id="alert-drill-badge">DRILL - NOT REAL</div>
-      <div class="alert-overlay-icon" id="alert-overlay-icon">&#9888;</div>
-      <div class="alert-overlay-type" id="alert-overlay-type">EMERGENCY</div>
-      <div class="alert-overlay-button" id="alert-overlay-button"></div>
-      <div class="alert-overlay-time" id="alert-overlay-time"></div>
-      <button class="acknowledge-btn" onclick="dismissAlert()">ACKNOWLEDGE</button>
+    <div class="overlay-inner">
+      <div id="overlay-drill-badge" class="drill-badge hidden">DRILL &mdash; NOT A REAL EMERGENCY</div>
+      <div class="overlay-icon" id="overlay-icon">&#9888;</div>
+      <div class="overlay-type" id="overlay-type">EMERGENCY</div>
+      <div class="overlay-btn-name" id="overlay-btn-name"></div>
+      <div class="overlay-time" id="overlay-time"></div>
+      <button class="overlay-ack-btn" onclick="dismissAlert()">ACKNOWLEDGE</button>
     </div>
   </div>
 
-  <!-- Top bar -->
+  <!-- Topbar -->
   <div class="topbar">
     <div class="topbar-logo">&#9888; EVACU</div>
     <div class="topbar-right">
-      <div class="topbar-device" id="topbar-device-name"></div>
-      <div class="topbar-dot" id="topbar-status">&#9679;</div>
+      <span class="topbar-name" id="topbar-name"></span>
+      <span class="status-dot online" id="status-dot">&#9679;</span>
     </div>
   </div>
 
-  <!-- Tab bar -->
-  <div class="tabbar">
-    <button class="tab-btn active" onclick="showTab('alerts')" id="tab-alerts">
-      <div class="tab-icon">&#128680;</div>
-      <div class="tab-label">Alerts</div>
-    </button>
-    <button class="tab-btn" onclick="showTab('messages')" id="tab-messages">
-      <div class="tab-icon">&#128172;</div>
-      <div class="tab-label">Messages</div>
-    </button>
-    <button class="tab-btn" onclick="showTab('active')" id="tab-active">
-      <div class="tab-icon">&#128276;</div>
-      <div class="tab-label">Active</div>
-      <div class="tab-badge hidden" id="active-badge">0</div>
-    </button>
-    <button class="tab-btn" onclick="showTab('status')" id="tab-status">
-      <div class="tab-icon">&#128225;</div>
-      <div class="tab-label">Status</div>
-    </button>
-  </div>
+  <!-- Tab content -->
+  <div class="content-area">
 
-  <!-- Content -->
-  <div class="tab-content">
-    <!-- Alerts tab -->
-    <div id="content-alerts" class="tab-pane active">
-      <div class="buttons-grid" id="buttons-grid">
-        <div class="empty-state">Loading...</div>
+    <!-- ALERTS TAB -->
+    <div id="tab-alerts" class="tab-pane active">
+      <div class="btn-grid" id="btn-grid">
+        <div class="empty">Loading buttons...</div>
       </div>
     </div>
 
-    <!-- Messages tab -->
-    <div id="content-messages" class="tab-pane">
-      <div class="toolbar">
-        <button class="action-btn primary" onclick="showNewMessage()">+ New Message</button>
+    <!-- MESSAGES TAB -->
+    <div id="tab-messages" class="tab-pane">
+      <div class="list-toolbar">
+        <button class="top-action-btn" onclick="toggleNewMsg()">+ New Message</button>
       </div>
-      <div id="messages-list" class="list-container">
-        <div class="empty-state">No messages yet</div>
+      <div id="new-msg-form" class="inline-form hidden">
+        <input id="msg-title" class="field" type="text" placeholder="Title"/>
+        <textarea id="msg-body" class="field textarea" rows="3" placeholder="Message text..."></textarea>
+        <div class="form-btns">
+          <button class="btn-primary" onclick="sendMessage()">Send</button>
+          <button class="btn-ghost" onclick="toggleNewMsg()">Cancel</button>
+        </div>
       </div>
-      <div id="new-message-form" class="slide-form hidden">
-        <div class="form-title">New Message</div>
-        <input type="text" id="msg-title" placeholder="Title" class="form-input"/>
-        <textarea id="msg-text" placeholder="Write your message..." class="form-textarea" rows="4"></textarea>
-        <div class="form-row">
-          <button class="action-btn primary" onclick="sendMessage()">Send</button>
-          <button class="action-btn ghost" onclick="hideNewMessage()">Cancel</button>
+      <div id="messages-list" class="scroll-list">
+        <div class="empty">No messages</div>
+      </div>
+    </div>
+
+    <!-- ACTIVE ALERTS TAB -->
+    <div id="tab-active" class="tab-pane">
+      <div id="active-list" class="scroll-list">
+        <div class="all-clear-state">
+          <div class="ac-icon">&#10003;</div>
+          <div class="ac-title">All Clear</div>
+          <div class="ac-sub">No active alerts</div>
         </div>
       </div>
     </div>
 
-    <!-- Active alerts tab -->
-    <div id="content-active" class="tab-pane">
-      <div id="active-alerts-list" class="list-container">
-        <div class="empty-state all-clear">
-          <div class="all-clear-icon">&#10003;</div>
-          <div class="all-clear-title">All Clear</div>
-          <div class="all-clear-sub">No active alerts</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Status tab -->
-    <div id="content-status" class="tab-pane">
+    <!-- STATUS TAB -->
+    <div id="tab-status" class="tab-pane">
       <div class="status-card">
-        <div class="status-row"><span class="status-lbl">Device Name</span><span class="status-val" id="st-name">-</span></div>
-        <div class="status-row"><span class="status-lbl">Device ID</span><span class="status-val mono" id="st-id">-</span></div>
-        <div class="status-row"><span class="status-lbl">User</span><span class="status-val" id="st-user">-</span></div>
-        <div class="status-row"><span class="status-lbl">Groups</span><span class="status-val" id="st-groups">-</span></div>
-        <div class="status-row"><span class="status-lbl">Status</span><span class="status-val green" id="st-conn">Online</span></div>
+        <div class="status-row"><span class="sl">Device</span><span class="sv" id="s-name">-</span></div>
+        <div class="status-row"><span class="sl">User</span><span class="sv" id="s-user">-</span></div>
+        <div class="status-row"><span class="sl">Groups</span><span class="sv" id="s-groups">-</span></div>
+        <div class="status-row"><span class="sl">Device ID</span><span class="sv mono" id="s-id">-</span></div>
+        <div class="status-row"><span class="sl">Status</span><span class="sv green">&#9679; Online</span></div>
       </div>
-      <button class="danger-btn" onclick="disconnect()">Disconnect Device</button>
     </div>
+
+  </div>
+
+  <!-- Bottom tab bar -->
+  <div class="tabbar">
+    <button class="tbtn active" id="tbtn-alerts" onclick="showTab('alerts')">
+      <span class="ti">&#128680;</span><span class="tl">Alerts</span>
+    </button>
+    <button class="tbtn" id="tbtn-messages" onclick="showTab('messages')">
+      <span class="ti">&#128172;</span><span class="tl">Messages</span>
+    </button>
+    <button class="tbtn" id="tbtn-active" onclick="showTab('active')">
+      <span class="ti">&#128276;</span><span class="tl">Active</span>
+      <span class="tbadge hidden" id="active-badge">0</span>
+    </button>
+    <button class="tbtn" id="tbtn-status" onclick="showTab('status')">
+      <span class="ti">&#128225;</span><span class="tl">Status</span>
+    </button>
   </div>
 </div>
 
-<!-- Thread view -->
+<!-- SCREEN: THREAD -->
 <div id="screen-thread" class="screen">
   <div class="topbar">
-    <button class="back-btn" onclick="showTab('messages')">&#8592; Back</button>
-    <div class="topbar-logo">Thread</div>
+    <button class="back-btn" onclick="closeThread()">&#8592;</button>
+    <div class="topbar-logo" id="thread-title">Thread</div>
     <div></div>
   </div>
-  <div id="thread-messages" class="thread-messages"></div>
-  <div id="thread-reply-area" class="thread-reply-area">
-    <input type="text" id="reply-input" placeholder="Reply..." class="reply-input"/>
-    <button class="send-btn" onclick="sendReply()">&#9658;</button>
+  <div id="thread-body" class="thread-body"></div>
+  <div class="reply-bar">
+    <input id="reply-input" class="reply-field" type="text" placeholder="Reply..."/>
+    <button class="reply-send" onclick="sendReply()">&#9658;</button>
   </div>
 </div>
 
