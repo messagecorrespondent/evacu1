@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Evacu">
+<meta name="theme-color" content="#1e3a5f">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Evacu</title>
+
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js';
+  import {
+    getFirestore, collection, doc, getDoc, setDoc, addDoc,
+    onSnapshot, query, orderBy, limit, serverTimestamp,
+    where, updateDoc
+  } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
+
+  // ── YOUR FIREBASE CONFIG ─────────────────────────────────────────────────
+  // Replace these values with your Firebase project config
+  // Firebase Console → Project Settings → General → Your apps → Web app
+  const firebaseConfig = {
+    apiKey:            "YOUR_API_KEY",
+    authDomain:        "YOUR_PROJECT.firebaseapp.com",
+    projectId:         "YOUR_PROJECT_ID",
+    storageBucket:     "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId:             "YOUR_APP_ID"
+  };
+  // ────────────────────────────────────────────────────────────────────────
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // ── Device ID ────────────────────────────────────────────────────────────
+  function getDeviceId() {
+    let id = localStorage.getItem('evacu_device_id');
+    if (!id) {
+      id = 'pwa-' + Math.random().toString(36).substr(2, 8);
+      localStorage.setItem('evacu_device_id', id);
+    }
+    return id;
+  }
+  const deviceId = getDeviceId();
+
+  // ── State ────────────────────────────────────────────────────────────────
+  let state = {
+    registered: false,
+    device: null,
+    buttons: [],
+    alerts: [],
+    messages: [],
+    activeAlert: null,
+    tab: 'alerts',
+    listeners: [],
+  };
+
+  // ── Heartbeat ─────────────────────────────────────────────────────────────
+  async function heartbeat() {
+    if (!state.registered) return;
+    try {
+      await updateDoc(doc(db, 'devices', deviceId), {
+        lastSeen: serverTimestamp(),
+        status: 'online',
+        platform: 'pwa'
+      });
+    } catch(e) {}
+  }
+  setInterval(heartbeat, 30000);
+
+  // ── Check registration ───────────────────────────────────────────────────
+  async function checkRegistration() {
+    try {
+      const snap = await getDoc(doc(db, 'devices', deviceId));
+      if (snap.exists()) {
+        state.device = { id: snap.id, ...snap.data() };
+        state.registered = true;
+        heartbeat();
+        startListeners();
+        render();
+      } else {
+        state.registered = false;
+        render();
+      }
+    } catch(e) {
+      showToast('Connection error: ' + e.message, 'error');
+    }
+  }
+
+  // ── Listeners ─────────────────────────────────────────────────────────────
+  function startListeners() {
+    state.listeners.forEach(u => u());
+    state.listeners = [];
+
+    // Buttons
+    state.listeners.push(
+      onSnapshot(collection(db, 'buttons'), snap => {
+        state.buttons = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+          .sort((a,b) => a.label?.localeCompare(b.label));
+        renderButtons();
+      })
+    );
+
+    // Active alerts
+    state.listeners.push(
+      onSnapshot(
+        query(collection(db, 'alerts'), where('status', '==', 'active')),
+        snap => {
+          const prev = state.alerts.length;
+          state.alerts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          if (state.alerts.length > prev && state.alerts.length > 0) {
+            triggerAlertUI(state.alerts[0]);
+          }
+          renderActiveAlerts();
+          updateAlertBadge();
+        }
+      )
+    );
+
+    // Messages
+    state.listeners.push(
+      onSnapshot(
+        query(collection(db, 'messages'), orderBy('timestamp', 'desc'), limit(50)),
+        snap => {
+          state.messages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          renderMessages();
+        }
+      )
+    );
+  }
+
+  // ── Send alert ────────────────────────────────────────────────────────────
+  async function sendAlert(buttonId) {
+    const btn = state.buttons.find(b => b.id === buttonId);
+    if (!btn) return;
+    try {
+      await addDoc(collection(db, 'alerts'), {
+        type: btn.alertType || 'emergency',
+        buttonId: buttonId,
+        group: btn.group || 'default',
+        senderDevice: deviceId,
+        timestamp: serverTimestamp(),
+        status: 'active',
+        isDrill: false,
+        source: 'pwa'
+      });
+      showToast('Alert sent!', 'success');
+      logEvent('alert_sent_pwa', buttonId);
+    } catch(e) {
+      showToast('Failed to send alert: ' + e.message, 'error');
+    }
+  }
+
+  // ── Send message ──────────────────────────────────────────────────────────
+  async function sendMessage(title, text, group) {
+    try {
+      await addDoc(collection(db, 'messages'), {
+        title, text, group,
+        sender: deviceId,
+        timestamp: serverTimestamp(),
+        responsesEnabled: true,
+        source: 'pwa'
+      });
+      showToast('Message sent!', 'success');
+    } catch(e) {
+      showToast('Failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Log event ─────────────────────────────────────────────────────────────
+  async function logEvent(event, details = '') {
+    try {
+      await addDoc(collection(db, 'logs'), {
+        event, details,
+        device: deviceId,
+        timestamp: serverTimestamp()
+      });
+    } catch(e) {}
+  }
+
+  // ── Alert UI trigger ──────────────────────────────────────────────────────
+  function triggerAlertUI(alert) {
+    state.activeAlert = alert;
+    document.getElementById('overlay').classList.add('show');
+    document.getElementById('overlay-type').textContent =
+      (alert.type || 'ALERT').toUpperCase();
+    document.getElementById('overlay-btn').textContent =
+      alert.buttonId || '';
+    document.getElementById('overlay-group').textContent =
+      'Group: ' + (alert.group || '');
+    document.getElementById('overlay-drill').style.display =
+      alert.isDrill ? 'block' : 'none';
+    document.getElementById('overlay').style.background =
+      alert.isDrill ? '#1a365d' : '#7b1a1a';
+
+    // Vibrate
+    if (navigator.vibrate) {
+      navigator.vibrate([300, 100, 300, 100, 300]);
+    }
+
+    // Notification
+    if (Notification.permission === 'granted') {
+      new Notification('EVACU ALERT', {
+        body: (alert.type || 'Alert').toUpperCase() + ' — ' + (alert.buttonId || ''),
+        icon: '/icon-192.png',
+        requireInteraction: true,
+        vibrate: [300, 100, 300]
+      });
+    }
+  }
+
+  // ── Render functions ──────────────────────────────────────────────────────
+  function render() {
+    document.getElementById('app-registration').style.display =
+      state.registered ? 'none' : 'flex';
+    document.getElementById('app-main').style.display =
+      state.registered ? 'flex' : 'none';
+    document.getElementById('device-id-display').textContent = deviceId;
+    if (state.registered) {
+      renderButtons();
+      renderActiveAlerts();
+      renderMessages();
+    }
+  }
+
+  function renderButtons() {
+    const container = document.getElementById('buttons-grid');
+    if (!container) return;
+    if (state.buttons.length === 0) {
+      container.innerHTML = '<div class="empty-state">No buttons configured.<br>Add buttons in Evacu Admin on PC.</div>';
+      return;
+    }
+    container.innerHTML = state.buttons.map(btn => {
+      const colors = {
+        red: ['#c53030','#fff'],
+        yellow: ['#d69e2e','#1a1200'],
+        green: ['#276749','#fff'],
+        orange: ['#c05621','#fff'],
+        blue: ['#2b6cb0','#fff'],
+        purple: ['#553c9a','#fff'],
+        white: ['#e2e8f0','#1a202c'],
+      };
+      const [bg, fg] = colors[btn.color] || colors.blue;
+      const icon = {emergency:'⚠',allClear:'✓',information:'ℹ'}[btn.alertType] || '🔔';
+      return `
+        <div class="alert-btn" style="background:${bg};color:${fg}"
+             data-id="${btn.id}" data-hold="${btn.holdTime||3}"
+             onpointerdown="startHold(this)" onpointerup="cancelHold(this)"
+             onpointerleave="cancelHold(this)">
+          <div class="btn-icon">${icon}</div>
+          <div class="btn-label">${btn.label}</div>
+          <div class="btn-sub">Hold ${btn.holdTime||3}s</div>
+          <svg class="btn-ring" viewBox="0 0 100 100">
+            <circle class="ring-bg" cx="50" cy="50" r="44"/>
+            <circle class="ring-fill" cx="50" cy="50" r="44" id="ring-${btn.id}"/>
+          </svg>
+        </div>`;
+    }).join('');
+  }
+
+  function renderActiveAlerts() {
+    const el = document.getElementById('active-alerts-list');
+    if (!el) return;
+    if (state.alerts.length === 0) {
+      el.innerHTML = '<div class="empty-state green"><span>✓</span> All clear — no active alerts</div>';
+      return;
+    }
+    el.innerHTML = state.alerts.map(a => `
+      <div class="alert-item ${a.isDrill?'drill':''}">
+        <div class="alert-item-icon">${a.isDrill?'🏁':'🚨'}</div>
+        <div class="alert-item-info">
+          <div class="alert-item-type">${(a.type||'').toUpperCase()}${a.isDrill?' [DRILL]':''}</div>
+          <div class="alert-item-meta">Button: ${a.buttonId} · Group: ${a.group}</div>
+          <div class="alert-item-time">${fmtTime(a.timestamp)}</div>
+        </div>
+      </div>`).join('');
+  }
+
+  function renderMessages() {
+    const el = document.getElementById('messages-list');
+    if (!el) return;
+    if (state.messages.length === 0) {
+      el.innerHTML = '<div class="empty-state">No messages yet.</div>';
+      return;
+    }
+    el.innerHTML = state.messages.map(m => `
+      <div class="msg-item" onclick="openMessage('${m.id}')">
+        <div class="msg-title">${m.title||''}</div>
+        <div class="msg-meta">${m.sender==='admin_pc'?'Admin (PC)':m.sender} · ${fmtTime(m.timestamp)}</div>
+        <div class="msg-preview">${(m.text||'').substring(0,80)}${(m.text||'').length>80?'…':''}</div>
+      </div>`).join('');
+  }
+
+  function updateAlertBadge() {
+    const badge = document.getElementById('alert-badge');
+    if (badge) {
+      badge.textContent = state.alerts.length || '';
+      badge.style.display = state.alerts.length ? 'flex' : 'none';
+    }
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    return d.toLocaleDateString('fi-FI') + ' ' + d.toLocaleTimeString('fi-FI').slice(0,5);
+  }
+
+  // ── Message thread ────────────────────────────────────────────────────────
+  let currentMsgId = null;
+  let replyListener = null;
+
+  window.openMessage = async function(msgId) {
+    currentMsgId = msgId;
+    const msg = state.messages.find(m => m.id === msgId);
+    if (!msg) return;
+    document.getElementById('thread-title').textContent = msg.title || '';
+    document.getElementById('thread-body').textContent = msg.text || '';
+    document.getElementById('thread-sender').textContent =
+      (msg.sender === 'admin_pc' ? 'Admin (PC)' : msg.sender) + ' · ' + fmtTime(msg.timestamp);
+    document.getElementById('reply-input').style.display =
+      msg.responsesEnabled ? 'flex' : 'none';
+    showScreen('thread');
+    // Load replies
+    if (replyListener) replyListener();
+    replyListener = onSnapshot(
+      query(collection(db, 'messages', msgId, 'replies'), orderBy('timestamp')),
+      snap => {
+        const el = document.getElementById('replies-list');
+        el.innerHTML = snap.docs.map(r => {
+          const rd = r.data();
+          const isMe = rd.sender === deviceId;
+          return `<div class="bubble ${isMe?'me':'them'}">
+            <div class="bubble-sender">${isMe?'You':(rd.sender==='admin_pc'?'Admin (PC)':rd.sender)}</div>
+            <div class="bubble-text">${rd.text||''}</div>
+          </div>`;
+        }).join('');
+        el.scrollTop = el.scrollHeight;
+      }
+    );
+  };
+
+  window.sendReply = async function() {
+    const input = document.getElementById('reply-text');
+    const text = input.value.trim();
+    if (!text || !currentMsgId) return;
+    input.value = '';
+    try {
+      await addDoc(collection(db, 'messages', currentMsgId, 'replies'), {
+        text, sender: deviceId, timestamp: serverTimestamp()
+      });
+    } catch(e) {
+      showToast('Failed to send reply', 'error');
+    }
+  };
+
+  // ── Hold button logic ─────────────────────────────────────────────────────
+  let holdTimer = null;
+  let holdInterval = null;
+  let holdProgress = 0;
+
+  window.startHold = function(el) {
+    const btnId = el.dataset.id;
+    const holdTime = parseFloat(el.dataset.hold) || 3;
+    holdProgress = 0;
+    el.classList.add('holding');
+    const ring = document.getElementById('ring-' + btnId);
+    const circumference = 2 * Math.PI * 44;
+    if (ring) {
+      ring.style.strokeDasharray = circumference;
+      ring.style.strokeDashoffset = circumference;
+    }
+
+    holdInterval = setInterval(() => {
+      holdProgress += 50 / (holdTime * 1000);
+      if (ring) {
+        ring.style.strokeDashoffset = circumference * (1 - holdProgress);
+      }
+      if (holdProgress >= 1) {
+        clearInterval(holdInterval);
+        el.classList.remove('holding');
+        el.classList.add('fired');
+        setTimeout(() => el.classList.remove('fired'), 2000);
+        sendAlert(btnId);
+        if (ring) ring.style.strokeDashoffset = circumference;
+      }
+    }, 50);
+  };
+
+  window.cancelHold = function(el) {
+    clearTimeout(holdTimer);
+    clearInterval(holdInterval);
+    holdProgress = 0;
+    el.classList.remove('holding');
+    const btnId = el.dataset.id;
+    const ring = document.getElementById('ring-' + btnId);
+    if (ring) {
+      const circumference = 2 * Math.PI * 44;
+      ring.style.strokeDashoffset = circumference;
+    }
+  };
+
+  // ── Navigation ────────────────────────────────────────────────────────────
+  window.showTab = function(tab) {
+    state.tab = tab;
+    document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    const content = document.getElementById('tab-' + tab);
+    const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+    if (content) content.style.display = 'flex';
+    if (btn) btn.classList.add('active');
+  };
+
+  window.showScreen = function(screen) {
+    document.querySelectorAll('.screen').forEach(el => el.style.display = 'none');
+    const el = document.getElementById('screen-' + screen);
+    if (el) el.style.display = 'flex';
+  };
+
+  window.showNewMessageForm = function() {
+    showScreen('new-message');
+  };
+
+  window.submitNewMessage = async function() {
+    const title = document.getElementById('nm-title').value.trim();
+    const text  = document.getElementById('nm-text').value.trim();
+    const group = document.getElementById('nm-group').value;
+    if (!title || !text) { showToast('Fill in all fields', 'error'); return; }
+    await sendMessage(title, text, group);
+    document.getElementById('nm-title').value = '';
+    document.getElementById('nm-text').value  = '';
+    showScreen('main');
+    showTab('messages');
+  };
+
+  window.dismissAlert = function() {
+    document.getElementById('overlay').classList.remove('show');
+    state.activeAlert = null;
+  };
+
+  window.checkReg = function() {
+    checkRegistration();
+  };
+
+  window.copyDeviceId = function() {
+    navigator.clipboard.writeText(deviceId);
+    showToast('Device ID copied!', 'success');
+  };
+
+  function showToast(msg, type = 'info') {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'toast show ' + type;
+    setTimeout(() => toast.classList.remove('show'), 3000);
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  async function init() {
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    await checkRegistration();
+  }
+
+  // Wait for DOM
+  document.addEventListener('DOMContentLoaded', init);
+</script>
+
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root {
+  --bg:        #0f1923;
+  --bg2:       #1a2332;
+  --bg3:       #243040;
+  --accent:    #1e3a5f;
+  --blue:      #3182ce;
+  --light:     #4fc3f7;
+  --text:      #e2e8f0;
+  --muted:     #718096;
+  --green:     #38a169;
+  --red:       #e53e3e;
+  --yellow:    #d69e2e;
+  --border:    rgba(255,255,255,0.08);
+  --radius:    14px;
+}
+html,body { height:100%; background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  overflow:hidden; }
+
+/* ── Screens ── */
+.screen { display:none; flex-direction:column; height:100vh; width:100vw;
+  position:fixed; top:0; left:0; }
+#screen-main { display:flex; }
+
+/* ── Registration ── */
+#app-registration {
+  display:none; flex-direction:column; align-items:center;
+  justify-content:center; height:100vh; padding:24px;
+  background:linear-gradient(160deg, #1e3a5f 0%, #0f1923 60%);
+}
+.reg-logo { font-size:56px; margin-bottom:12px; }
+.reg-title { font-size:32px; font-weight:900; letter-spacing:4px; color:white; }
+.reg-sub { font-size:13px; color:rgba(255,255,255,0.5); letter-spacing:2px; margin-bottom:40px; }
+.reg-card { background:rgba(255,255,255,0.07); border-radius:20px;
+  padding:28px; width:100%; max-width:360px; }
+.reg-label { font-size:10px; font-weight:bold; color:var(--muted);
+  letter-spacing:2px; margin-bottom:8px; }
+.device-id-box { background:rgba(255,255,255,0.1); border-radius:10px;
+  padding:14px 16px; font-family:monospace; font-size:16px; font-weight:bold;
+  color:var(--light); text-align:center; margin-bottom:8px; word-break:break-all; }
+.copy-btn { width:100%; padding:10px; background:transparent; border:1px solid rgba(255,255,255,0.2);
+  border-radius:8px; color:var(--muted); font-size:12px; cursor:pointer; margin-bottom:20px; }
+.steps { margin:16px 0; }
+.step { display:flex; align-items:flex-start; gap:10px; margin-bottom:8px; }
+.step-num { background:rgba(79,195,247,0.2); color:var(--light); border-radius:50%;
+  width:20px; height:20px; display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:bold; flex-shrink:0; margin-top:1px; }
+.step-txt { font-size:12px; color:rgba(255,255,255,0.65); line-height:1.5; }
+.connect-btn { width:100%; padding:16px; background:var(--blue); border:none;
+  border-radius:12px; color:white; font-size:15px; font-weight:bold;
+  cursor:pointer; margin-top:16px; }
+
+/* ── Main app ── */
+#app-main { display:none; flex-direction:column; height:100vh; }
+.topbar { background:var(--accent); padding:env(safe-area-inset-top,0) 16px 0;
+  display:flex; align-items:center; height:calc(52px + env(safe-area-inset-top,0));
+  flex-shrink:0; gap:12px; }
+.topbar-logo { font-size:16px; font-weight:900; color:white; letter-spacing:2px; flex:1; }
+.topbar-status { font-size:11px; color:var(--light); }
+
+/* ── Tabs ── */
+.tab-bar { display:flex; background:var(--bg2); border-top:1px solid var(--border);
+  padding-bottom:env(safe-area-inset-bottom,0); flex-shrink:0; }
+.tab-btn { flex:1; display:flex; flex-direction:column; align-items:center;
+  padding:10px 0; background:transparent; border:none; color:var(--muted);
+  font-size:10px; cursor:pointer; gap:3px; position:relative; }
+.tab-btn.active { color:var(--light); }
+.tab-btn .tab-icon { font-size:22px; }
+.tab-badge { position:absolute; top:6px; right:calc(50% - 18px);
+  background:var(--red); color:white; border-radius:10px; min-width:18px;
+  height:18px; font-size:10px; font-weight:bold; display:none;
+  align-items:center; justify-content:center; padding:0 4px; }
+
+/* ── Tab content ── */
+.tab-content { display:none; flex-direction:column; flex:1; overflow:hidden; }
+#tab-alerts { display:flex; }
+
+/* ── Alert buttons grid ── */
+.buttons-grid { display:grid; grid-template-columns:1fr 1fr;
+  gap:14px; padding:16px; overflow-y:auto; flex:1; }
+.alert-btn { border-radius:18px; padding:20px 14px 14px;
+  display:flex; flex-direction:column; align-items:center; gap:6px;
+  cursor:pointer; user-select:none; position:relative; overflow:hidden;
+  transition:transform 0.1s, opacity 0.1s; min-height:150px; justify-content:center;
+  border:2px solid rgba(255,255,255,0.15); }
+.alert-btn.holding { transform:scale(0.95); }
+.alert-btn.fired { opacity:0.6; }
+.btn-icon { font-size:30px; }
+.btn-label { font-size:15px; font-weight:bold; text-align:center; line-height:1.3; }
+.btn-sub { font-size:11px; opacity:0.65; }
+.btn-ring { position:absolute; inset:4px; width:calc(100% - 8px); height:calc(100% - 8px); }
+.ring-bg { fill:none; stroke:rgba(255,255,255,0.1); stroke-width:5; }
+.ring-fill { fill:none; stroke:rgba(255,255,255,0.8); stroke-width:5;
+  stroke-linecap:round; transform:rotate(-90deg); transform-origin:50% 50%;
+  transition:stroke-dashoffset 0.05s linear; stroke-dasharray:276.5; stroke-dashoffset:276.5; }
+
+/* ── Active alerts list ── */
+.alerts-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+.alert-item { background:rgba(229,62,62,0.15); border:1px solid rgba(229,62,62,0.3);
+  border-radius:12px; padding:14px; display:flex; gap:12px; align-items:flex-start; }
+.alert-item.drill { background:rgba(49,130,206,0.15); border-color:rgba(49,130,206,0.3); }
+.alert-item-icon { font-size:24px; }
+.alert-item-type { font-size:16px; font-weight:bold; color:white; }
+.alert-item-meta { font-size:12px; color:var(--muted); margin-top:2px; }
+.alert-item-time { font-size:11px; color:var(--muted); margin-top:4px; }
+
+/* ── Messages ── */
+.msg-header { display:flex; justify-content:space-between; align-items:center;
+  padding:12px 16px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.msg-header h2 { font-size:16px; font-weight:bold; }
+.new-msg-btn { background:var(--blue); border:none; border-radius:8px;
+  color:white; padding:8px 14px; font-size:13px; font-weight:bold; cursor:pointer; }
+.messages-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.msg-item { background:var(--bg2); border-radius:12px; padding:14px;
+  cursor:pointer; border:1px solid var(--border); }
+.msg-item:active { opacity:0.7; }
+.msg-title { font-size:14px; font-weight:bold; color:white; margin-bottom:3px; }
+.msg-meta { font-size:11px; color:var(--light); margin-bottom:4px; }
+.msg-preview { font-size:12px; color:var(--muted); }
+
+/* ── Thread screen ── */
+#screen-thread { background:var(--bg); }
+.thread-topbar { background:var(--accent); padding:env(safe-area-inset-top,12px) 16px 12px;
+  display:flex; align-items:center; gap:12px; flex-shrink:0; }
+.back-btn { background:transparent; border:none; color:var(--light);
+  font-size:24px; cursor:pointer; padding:0 8px 0 0; }
+.thread-header-info { flex:1; }
+.thread-header-title { font-size:15px; font-weight:bold; color:white; }
+.thread-header-meta { font-size:11px; color:rgba(255,255,255,0.5); }
+.thread-orig { background:var(--bg2); padding:16px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.thread-orig-text { font-size:14px; color:var(--text); line-height:1.5; }
+.replies { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.bubble { max-width:80%; display:flex; flex-direction:column; gap:3px; }
+.bubble.me { align-self:flex-end; align-items:flex-end; }
+.bubble.them { align-self:flex-start; }
+.bubble-sender { font-size:10px; color:var(--muted); }
+.bubble-text { padding:10px 14px; border-radius:18px; font-size:14px; line-height:1.4; }
+.bubble.me .bubble-text { background:var(--blue); color:white; }
+.bubble.them .bubble-text { background:var(--bg3); color:var(--text); }
+.reply-input { display:flex; gap:8px; padding:12px 16px;
+  padding-bottom:max(12px,env(safe-area-inset-bottom));
+  background:var(--bg2); border-top:1px solid var(--border); flex-shrink:0; }
+.reply-input input { flex:1; background:var(--bg3); border:1px solid var(--border);
+  border-radius:20px; padding:10px 16px; color:var(--text); font-size:14px; outline:none; }
+.reply-send-btn { background:var(--blue); border:none; border-radius:50%;
+  width:40px; height:40px; color:white; font-size:18px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+
+/* ── New message screen ── */
+#screen-new-message { background:var(--bg); }
+.form-topbar { background:var(--accent); padding:env(safe-area-inset-top,12px) 16px 12px;
+  display:flex; align-items:center; gap:12px; flex-shrink:0; }
+.form-topbar h2 { flex:1; color:white; font-size:16px; font-weight:bold; }
+.send-btn { background:var(--blue); border:none; border-radius:8px;
+  color:white; padding:8px 16px; font-weight:bold; cursor:pointer; }
+.form-body { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px; }
+.form-group label { display:block; font-size:11px; font-weight:bold;
+  color:var(--muted); letter-spacing:1px; margin-bottom:6px; }
+.form-group input, .form-group textarea, .form-group select {
+  width:100%; background:var(--bg2); border:1px solid var(--border);
+  border-radius:10px; padding:12px 14px; color:var(--text); font-size:14px;
+  outline:none; font-family:inherit; }
+.form-group textarea { resize:none; height:120px; }
+.form-group select option { background:var(--bg2); }
+
+/* ── Status tab ── */
+.status-content { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+.status-card { background:var(--bg2); border-radius:12px; padding:16px;
+  border:1px solid var(--border); }
+.status-card h3 { font-size:13px; font-weight:bold; color:var(--muted);
+  letter-spacing:1px; margin-bottom:12px; }
+.status-row { display:flex; justify-content:space-between; align-items:center;
+  padding:8px 0; border-bottom:1px solid var(--border); }
+.status-row:last-child { border-bottom:none; }
+.status-row-label { font-size:13px; color:var(--muted); }
+.status-row-value { font-size:13px; font-weight:bold; color:var(--text); }
+.status-row-value.online { color:var(--green); }
+
+/* ── Alert overlay ── */
+#overlay { position:fixed; inset:0; display:none; flex-direction:column;
+  align-items:center; justify-content:center; z-index:9999;
+  animation:pulse 0.8s ease-in-out infinite alternate; }
+#overlay.show { display:flex; }
+@keyframes pulse { from{opacity:0.85} to{opacity:1} }
+.overlay-drill { background:rgba(49,130,206,0.3); color:#90cdf4;
+  border-radius:20px; padding:6px 16px; font-size:12px; font-weight:bold;
+  margin-bottom:20px; display:none; }
+.overlay-icon { font-size:80px; margin-bottom:16px; }
+.overlay-type { font-size:44px; font-weight:900; color:white; letter-spacing:4px; }
+.overlay-btn { font-size:20px; color:rgba(255,255,255,0.8); margin-top:8px; }
+.overlay-group { font-size:14px; color:rgba(255,255,255,0.5); margin-top:4px; }
+.overlay-dismiss { margin-top:48px; background:white; border:none;
+  border-radius:18px; padding:18px 48px; font-size:16px; font-weight:900;
+  cursor:pointer; }
+
+/* ── Empty states ── */
+.empty-state { text-align:center; color:var(--muted); padding:40px 20px;
+  font-size:14px; line-height:1.8; }
+.empty-state.green { color:var(--green); }
+
+/* ── Toast ── */
+.toast { position:fixed; bottom:90px; left:50%; transform:translateX(-50%) translateY(20px);
+  background:var(--bg3); color:white; padding:12px 20px; border-radius:10px;
+  font-size:13px; opacity:0; transition:all 0.3s; pointer-events:none;
+  z-index:10000; white-space:nowrap; }
+.toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+.toast.success { background:#276749; }
+.toast.error { background:#9b2c2c; }
+</style>
+</head>
+<body>
+
+<!-- ── Registration screen ── -->
+<div id="app-registration">
+  <div class="reg-logo">⚠️</div>
+  <div class="reg-title">EVACU</div>
+  <div class="reg-sub">EMERGENCY ALERT SYSTEM</div>
+  <div class="reg-card">
+    <div class="reg-label">YOUR DEVICE ID</div>
+    <div class="device-id-box" id="device-id-display">loading...</div>
+    <button class="copy-btn" onclick="copyDeviceId()">📋 Copy Device ID</button>
+    <div class="steps">
+      <div class="step"><div class="step-num">1</div><div class="step-txt">Copy your Device ID above</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-txt">Give it to admin → they add it in Evacu Admin on PC</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-txt">Tap Connect below once you've been added</div></div>
+    </div>
+    <button class="connect-btn" onclick="checkReg()">Connect to System</button>
+  </div>
+</div>
+
+<!-- ── Main app ── -->
+<div id="app-main">
+
+  <!-- Main screen -->
+  <div class="screen" id="screen-main">
+    <div class="topbar">
+      <div class="topbar-logo">⚠ EVACU</div>
+      <div class="topbar-status" id="topbar-status">● Connected</div>
+    </div>
+
+    <div id="tab-alerts" class="tab-content" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+      <div class="buttons-grid" id="buttons-grid">
+        <div class="empty-state">Loading buttons...</div>
+      </div>
+      <div style="padding:8px 16px 0; font-size:11px; font-weight:bold; color:var(--muted); letter-spacing:1px;">ACTIVE ALERTS</div>
+      <div class="alerts-list" id="active-alerts-list" style="max-height:200px;"></div>
+    </div>
+
+    <div id="tab-messages" class="tab-content" style="flex-direction:column;">
+      <div class="msg-header">
+        <h2>Messages</h2>
+        <button class="new-msg-btn" onclick="showNewMessageForm()">+ New</button>
+      </div>
+      <div class="messages-list" id="messages-list"></div>
+    </div>
+
+    <div id="tab-status" class="tab-content" style="flex-direction:column;">
+      <div class="status-content">
+        <div class="status-card">
+          <h3>DEVICE INFO</h3>
+          <div class="status-row">
+            <span class="status-row-label">Status</span>
+            <span class="status-row-value online">● Online</span>
+          </div>
+          <div class="status-row">
+            <span class="status-row-label">Device ID</span>
+            <span class="status-row-value" id="status-device-id" style="font-family:monospace;font-size:11px;"></span>
+          </div>
+          <div class="status-row">
+            <span class="status-row-label">Name</span>
+            <span class="status-row-value" id="status-name">—</span>
+          </div>
+          <div class="status-row">
+            <span class="status-row-label">User</span>
+            <span class="status-row-value" id="status-user">—</span>
+          </div>
+          <div class="status-row">
+            <span class="status-row-label">Groups</span>
+            <span class="status-row-value" id="status-groups">—</span>
+          </div>
+        </div>
+        <div class="status-card" style="background:rgba(229,62,62,0.1);border-color:rgba(229,62,62,0.2);">
+          <h3 style="color:#fc8181;">ACTIVE ALERTS</h3>
+          <div id="status-alert-count" style="font-size:32px;font-weight:bold;color:#fc8181;">0</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="alerts" onclick="showTab('alerts')">
+        <span class="tab-icon">🚨</span>
+        <span>Alerts</span>
+        <span class="tab-badge" id="alert-badge"></span>
+      </button>
+      <button class="tab-btn" data-tab="messages" onclick="showTab('messages')">
+        <span class="tab-icon">💬</span>
+        <span>Messages</span>
+      </button>
+      <button class="tab-btn" data-tab="status" onclick="showTab('status');updateStatusTab()">
+        <span class="tab-icon">📡</span>
+        <span>Status</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Thread screen -->
+  <div class="screen" id="screen-thread">
+    <div class="thread-topbar">
+      <button class="back-btn" onclick="showScreen('main');showTab('messages')">‹</button>
+      <div class="thread-header-info">
+        <div class="thread-header-title" id="thread-title"></div>
+        <div class="thread-header-meta" id="thread-sender"></div>
+      </div>
+    </div>
+    <div class="thread-orig">
+      <div class="thread-orig-text" id="thread-body"></div>
+    </div>
+    <div class="replies" id="replies-list"></div>
+    <div class="reply-input" id="reply-input">
+      <input type="text" id="reply-text" placeholder="Reply..."
+        onkeydown="if(event.key==='Enter')sendReply()">
+      <button class="reply-send-btn" onclick="sendReply()">➤</button>
+    </div>
+  </div>
+
+  <!-- New message screen -->
+  <div class="screen" id="screen-new-message">
+    <div class="form-topbar">
+      <button class="back-btn" onclick="showScreen('main')">‹</button>
+      <h2>New Message</h2>
+      <button class="send-btn" onclick="submitNewMessage()">Send</button>
+    </div>
+    <div class="form-body">
+      <div class="form-group">
+        <label>TITLE</label>
+        <input type="text" id="nm-title" placeholder="Message title...">
+      </div>
+      <div class="form-group">
+        <label>MESSAGE</label>
+        <textarea id="nm-text" placeholder="Write your message..."></textarea>
+      </div>
+      <div class="form-group">
+        <label>SEND TO GROUP</label>
+        <select id="nm-group">
+          <option value="all">All Groups</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Alert overlay -->
+<div id="overlay">
+  <div class="overlay-drill" id="overlay-drill">DRILL — NOT A REAL EMERGENCY</div>
+  <div class="overlay-icon">🚨</div>
+  <div class="overlay-type" id="overlay-type">ALERT</div>
+  <div class="overlay-btn" id="overlay-btn"></div>
+  <div class="overlay-group" id="overlay-group"></div>
+  <button class="overlay-dismiss" onclick="dismissAlert()">ACKNOWLEDGE</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// Update status tab when opened
+window.updateStatusTab = function() {
+  document.getElementById('status-device-id').textContent =
+    localStorage.getItem('evacu_device_id') || '';
+  if (window._appState && window._appState.device) {
+    const d = window._appState.device;
+    document.getElementById('status-name').textContent = d.name || '—';
+    document.getElementById('status-user').textContent = d.user || '—';
+    document.getElementById('status-groups').textContent =
+      (d.groups || []).join(', ') || '—';
+  }
+  document.getElementById('status-alert-count').textContent =
+    (window._appState && window._appState.alerts) ?
+    window._appState.alerts.length : 0;
+};
+</script>
+</body>
+</html>
