@@ -1,24 +1,14 @@
 {
-  "name": "Evacu Alert System",
+  "name": "Evacu",
   "short_name": "Evacu",
-  "description": "Emergency alert system for mobile devices",
-  "start_url": "/index.html",
+  "description": "Emergency Alert System",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#0f1923",
-  "theme_color": "#1e3a5f",
+  "theme_color": "#0f1923",
   "orientation": "portrait",
   "icons": [
-    {
-      "src": "icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
   ]
 }
